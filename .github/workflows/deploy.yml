@@ -1,0 +1,78 @@
+name: Build, Push, and Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to Cloud Run after building?"
+        required: false
+        default: "false"
+
+env:
+  # Update these values for your project.
+  GCP_IMAGE_PATH: europe-west2-docker.pkg.dev/uk-vm-00001/bug-blitz
+  GCP_IMAGE_NAME: bug-blitz
+  GCP_IMAGE: europe-west2-docker.pkg.dev/uk-vm-00001/bug-blitz/bug-blitz
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout repository code
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Generate a timestamp for tagging
+      - name: Generate timestamp for Docker tag
+        run: |
+          TIMESTAMP=$(date -u +"%Y.%m.%d.%H-%M-%S")
+          echo "DOCKER_TAG=$TIMESTAMP" >> $GITHUB_ENV
+
+      # Authenticate with GCP using the service account key
+      - name: Authenticate with GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      # Build the Docker image using your Dockerfile
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.GCP_IMAGE }}:${{ env.DOCKER_TAG }} .
+          docker images
+
+      # Configure Docker to use GCP Artifact Registry (or Container Registry)
+      - name: Configure Docker to use GCP Container Registry
+        run: |
+          echo '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}' | docker login -u _json_key_base64 --password-stdin europe-west2-docker.pkg.dev
+
+      # Push the Docker image to the registry
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.GCP_IMAGE }}:${{ env.DOCKER_TAG }}
+          echo "Pushed Docker Image: ${{ env.GCP_IMAGE }}:${{ env.DOCKER_TAG }}"
+
+  deploy:
+    needs: build-and-push
+    if: ${{ github.event.inputs.deploy == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      # Authenticate with GCP again before deploying
+      - name: Authenticate with GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      # Deploy the Docker image to Cloud Run
+      - id: deploy-cloudrun
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ secrets.GCP_CLOUD_RUN_SERVICE }}
+          image: ${{ env.GCP_IMAGE }}:${{ env.DOCKER_TAG }}
+          region: "europe-west2"
+
+      # Display the deployed service URL
+      - name: Display Deployed URL
+        run: echo "Deployed to ${{ steps.deploy-cloudrun.outputs.url }}"
